@@ -41,7 +41,6 @@ import com.intellij.execution.ProgramRunnerUtil;
 import com.intellij.execution.RunManager;
 import com.intellij.execution.RunnerAndConfigurationSettings;
 import com.intellij.execution.configurations.ConfigurationFactory;
-import com.intellij.execution.configurations.JavaRunConfigurationModule;
 import com.intellij.execution.configurations.RunConfiguration;
 import com.intellij.execution.executors.DefaultDebugExecutor;
 import com.intellij.execution.filters.TextConsoleBuilder;
@@ -53,7 +52,6 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.util.SystemInfo;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -67,7 +65,6 @@ import com.jetbrains.cidr.execution.debugger.CidrDebuggerSettings;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -136,9 +133,7 @@ public class NativeAndroidDebugger extends AndroidDebuggerImplBase<NativeAndroid
         String processName = client.getClientData().getClientDescription();
         if (processName != null) {
             Module module = this.findModuleForProcess(project, processName);
-            if (module == null) {
-                this.handleModuleNotFound(processName);
-            } else if (!this.hasExistingSession(project, client)) {
+            if (!this.hasExistingSession(project, client)) {
                 DebuggerSession debuggerSession = findJdwpDebuggerSession(project, getClientDebugPort(client));
                 if (debuggerSession != null) {
                     debuggerSession.getProcess().stop(false);
@@ -175,22 +170,24 @@ public class NativeAndroidDebugger extends AndroidDebuggerImplBase<NativeAndroid
         return null;
     }
 
-    protected void handleModuleNotFound(String packageName) {
-        ApplicationManager.getApplication().invokeLater(() -> {
-            Messages.showErrorDialog("Cannot find module that matches process name " + packageName, "Attach Failed");
-        });
-    }
-
     @NotNull
-    protected RunnerAndConfigurationSettings createRunnerAndConfigurationSettings(@NotNull Project project, @NotNull Module module, @NotNull Client client, @Nullable AndroidDebuggerState state) {
-        AndroidNativeAttachConfigurationType attachConfigurationType = AndroidNativeAttachConfigurationType.getInstance();
-        ConfigurationFactory factory = attachConfigurationType.getFactory();
-        String runConfigurationName = String.format("Android %s Debugger (%d)", this.getDisplayName(), client.getClientData().getPid());
+    protected RunnerAndConfigurationSettings createRunnerAndConfigurationSettings(@NotNull Project project, @Nullable Module module, @NotNull Client client, @Nullable AndroidDebuggerState state) {
+        String runConfigurationName = "Android " + getDisplayName() + " (" + client.getClientData().getPid() + ") [" + client.getClientData().getClientDescription() + "]";
+        if (module == null) {
+            runConfigurationName += " [third party]";
+            if(state != null){
+                module = state.getDebuggeeModule();
+            }
+            if(module == null){
+                module = ProjectFacetManager.getInstance(project).getFacets(AndroidFacet.ID).get(0).getModule();
+            }
+        }
+        ConfigurationFactory factory = AndroidNativeAttachConfigurationType.getInstance().getFactory();
         RunnerAndConfigurationSettings runSettings = RunManager.getInstance(project).createRunConfiguration(runConfigurationName, factory);
-        AndroidNativeAttachConfiguration configuration = (AndroidNativeAttachConfiguration)runSettings.getConfiguration();
+        AndroidNativeAttachConfiguration configuration = (AndroidNativeAttachConfiguration) runSettings.getConfiguration();
         configuration.setClient(client);
         configuration.getAndroidDebuggerContext().setDebuggerType(this.getId());
-        ((JavaRunConfigurationModule)configuration.getConfigurationModule()).setModule(module);
+        configuration.getConfigurationModule().setModule(module);
         configuration.setConsoleProvider(ourConsoleProvider);
         NativeAndroidDebuggerState targetState = (NativeAndroidDebuggerState)configuration.getAndroidDebuggerContext().getAndroidDebuggerState();
         if (state instanceof NativeAndroidDebuggerState) {

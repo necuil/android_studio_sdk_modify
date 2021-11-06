@@ -15,6 +15,7 @@ import com.android.ddmlib.TimeoutException;
 import com.android.ddmlib.SyncService.FileStat;
 import com.android.repository.Revision;
 import com.android.sdklib.devices.Abi;
+import com.android.tools.idea.explorer.adbimpl.AdbShellCommandBuilder;
 import com.android.tools.idea.ndk.NativeCompilerSetting;
 import com.android.tools.idea.ndk.NativeWorkspaceService;
 import com.android.tools.idea.run.AndroidProcessText;
@@ -143,6 +144,9 @@ public class ConnectLLDBTask extends ConnectDebuggerTask {
                     LOG.error("Unsupported device: " + this.getDeviceDisplayName(client) + "\nNative debugging is blocked on this device (ptrace_scope=" + ptraceScope + ").\nSee native debugger requirements at: https://developer.android.com/studio/debug#debug-types");
                     throw new ExecutionException("Unsupported device. This device cannot be debugged using the native debugger. See log file for details.");
                 }
+            } else if (isRunSuOK(client)){
+                LOG.warn("Rooted device, using su shell to start debug session");
+                return ConnectLLDBTask.SessionStarterType.SU_SHELL;
             } else if (isRootedDevice(client.getDevice())) {
                 LOG.warn("Rooted device, using shell to start debug session");
                 return ConnectLLDBTask.SessionStarterType.ROOT_SHELL;
@@ -327,6 +331,8 @@ public class ConnectLLDBTask extends ConnectDebuggerTask {
                 return this.newInjectorSessionStarter(jdwpConnector, client, clientShellHelper, type == ConnectLLDBTask.SessionStarterType.INJECTOR_YAMA, lldbServer, startServerScript, launchStatus, printer);
             case ROOT_SHELL:
                 return this.newShellSessionStarter(jdwpConnector, client, clientShellHelper, lldbServer, startServerScript, launchStatus, printer);
+            case SU_SHELL:
+                return this.newSuShellSessionStarter(jdwpConnector, client, clientShellHelper, lldbServer, startServerScript, launchStatus, printer);
             case RUN_AS_SHELL:
                 return this.newRunAsSessionStarter(jdwpConnector, client, clientShellHelper, lldbServer, startServerScript, launchStatus, printer);
             default:
@@ -344,6 +350,13 @@ public class ConnectLLDBTask extends ConnectDebuggerTask {
     @NotNull
     private SessionStarter newShellSessionStarter(@Nullable JdwpConnector jdwpConnector, @NotNull Client client, @NotNull ClientShellHelper clientShellHelper, @NotNull File serverPath, @NotNull File startScriptPath, @NotNull ProcessHandlerLaunchStatus launchStatus, @NotNull ConsolePrinter printer) throws ExecutionException {
         SessionStarter sessionStarter = new ShellSessionStarterImpl(client, clientShellHelper, serverPath, startScriptPath, this.myDebuggerState, this.myProgressReporter, launchStatus, printer);
+        resumeVMOnSessionStarted(sessionStarter, jdwpConnector);
+        return sessionStarter;
+    }
+
+    @NotNull
+    private SessionStarter newSuShellSessionStarter(@Nullable JdwpConnector jdwpConnector, @NotNull Client client, @NotNull ClientShellHelper clientShellHelper, @NotNull File serverPath, @NotNull File startScriptPath, @NotNull ProcessHandlerLaunchStatus launchStatus, @NotNull ConsolePrinter printer) throws ExecutionException {
+        SessionStarter sessionStarter = new SuShellSessionStarterImpl(client, serverPath, startScriptPath, this.myDebuggerState, this.myProgressReporter, launchStatus, printer);
         resumeVMOnSessionStarted(sessionStarter, jdwpConnector);
         return sessionStarter;
     }
@@ -380,6 +393,17 @@ public class ConnectLLDBTask extends ConnectDebuggerTask {
             }
         } catch (Exception var7) {
             throw new ExecutionException(var7);
+        }
+    }
+
+    private static boolean isRunSuOK(@NotNull Client client) {
+        try {
+            CollectingOutputReceiver receiver = new CollectingOutputReceiver();
+            client.getDevice().executeShellCommand(new AdbShellCommandBuilder().withSuRootPrefix().withText("id").build(), receiver);
+            String output = receiver.getOutput().trim();
+            return output.contains("root");
+        } catch (Throwable e) {
+            return false;
         }
     }
 
@@ -629,6 +653,7 @@ public class ConnectLLDBTask extends ConnectDebuggerTask {
 
     public static enum SessionStarterType {
         ROOT_SHELL,
+        SU_SHELL,
         RUN_AS_SHELL,
         INJECTOR,
         INJECTOR_YAMA;

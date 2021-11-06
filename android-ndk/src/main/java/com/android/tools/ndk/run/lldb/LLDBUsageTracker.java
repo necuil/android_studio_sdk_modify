@@ -72,6 +72,7 @@ public class LLDBUsageTracker {
             case INJECTOR:
             case INJECTOR_YAMA:
                 return StarterType.INJECTOR_STARTER_TYPE;
+            case SU_SHELL:
             case ROOT_SHELL:
                 return StarterType.ROOT_SHELL_STARTER_TYPE;
             case RUN_AS_SHELL:
