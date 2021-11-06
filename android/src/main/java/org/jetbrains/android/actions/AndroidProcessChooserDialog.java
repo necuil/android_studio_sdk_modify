@@ -14,21 +14,33 @@
  * limitations under the License.
  */
 package org.jetbrains.android.actions;
+
+import com.android.ddmlib.AdbCommandRejectedException;
 import com.android.ddmlib.AndroidDebugBridge;
 import com.android.ddmlib.Client;
 import com.android.ddmlib.ClientData;
+import com.android.ddmlib.CollectingOutputReceiver;
 import com.android.ddmlib.IDevice;
+import com.android.ddmlib.MultiLineReceiver;
+import com.android.ddmlib.ShellCommandUnresponsiveException;
+import com.android.ddmlib.TimeoutException;
+import com.android.ddmlib.internal.ClientImpl;
+import com.android.ddmlib.internal.DeviceImpl;
 import com.android.tools.idea.adb.AdbService;
 import com.android.tools.idea.ddms.DeviceNameProperties;
 import com.android.tools.idea.ddms.DeviceNamePropertiesFetcher;
 import com.android.tools.idea.ddms.DeviceRenderer;
+import com.android.tools.idea.explorer.adbimpl.AdbShellCommandBuilder;
 import com.android.tools.idea.help.AndroidWebHelpProvider;
 import com.android.tools.idea.model.AndroidModel;
 import com.android.tools.idea.run.AndroidRunConfiguration;
 import com.android.tools.idea.run.editor.AndroidDebugger;
 import com.android.tools.idea.run.editor.AndroidDebuggerInfoProvider;
 import com.android.tools.idea.testartifacts.instrumented.AndroidTestRunConfiguration;
+import com.android.tools.ndk.run.editor.NativeAndroidDebugger;
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.FutureCallback;
 import com.intellij.execution.RunManager;
 import com.intellij.execution.RunnerAndConfigurationSettings;
@@ -64,9 +76,12 @@ import java.awt.event.ActionListener;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -92,11 +107,15 @@ import com.intellij.uiDesigner.core.GridConstraints;
 import com.intellij.uiDesigner.core.GridLayoutManager;
 import java.awt.Dimension;
 import java.awt.Insets;
+import java.util.Stack;
 
 import org.jetbrains.annotations.NonNls;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
 public class AndroidProcessChooserDialog extends DialogWrapper {
+    public static final Logger LOG = Logger.getInstance(AndroidProcessChooserDialog.class);
+
     @NonNls private static final String DEBUGGABLE_PROCESS_PROPERTY = "DEBUGGABLE_PROCESS";
     @NonNls private static final String SHOW_ALL_PROCESSES_PROPERTY = "SHOW_ALL_PROCESSES";
     @NonNls private static final String DEBUGGABLE_DEVICE_PROPERTY = "DEBUGGABLE_DEVICE";
@@ -461,6 +480,100 @@ public class AndroidProcessChooserDialog extends DialogWrapper {
         }
         return Arrays.asList(debugBridge.getDevices());
     }
+
+    private static boolean isRunSuOK(@NotNull IDevice device) {
+        try {
+            CollectingOutputReceiver receiver = new CollectingOutputReceiver();
+            device.executeShellCommand(new AdbShellCommandBuilder().withSuRootPrefix().withText("id").build(), receiver);
+            String output = receiver.getOutput().trim();
+            return output.contains("root");
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+    private void queryProcessesWithPSCommand(IDevice device, Multimap<Integer, Integer> out, Set<Integer> expects, String command) {
+        try {
+            device.executeShellCommand(command, new MultiLineReceiver() {
+                public boolean isCancelled() {
+                    return false;
+                }
+
+                public void processNewLines(String[] lines) {
+                    for (String line: lines) {
+                        try{
+                            String[] strings = line.split(" +");
+                            if(strings.length < 3)
+                                continue;
+                            int pid = Integer.parseInt(strings[1]);
+                            if(pid <= 0 || expects.contains(pid))
+                                continue;
+                            int ppid = Integer.parseInt(strings[2]);
+                            if(ppid <= 0)
+                                continue;
+                            out.put(ppid, pid);
+                        }catch (Throwable e){
+                            LOG.error(e);
+                        }
+                    }
+                }
+            });
+        } catch (TimeoutException | AdbCommandRejectedException | ShellCommandUnresponsiveException | IOException e) {
+            LOG.error(e);
+        }
+    }
+    private List<Client> queryChildrenProcess(IDevice device, List<Client> clients) {
+        Stack<Client> stack = new Stack<>();
+        HashMap<Integer, Client> parents = new HashMap<>();
+        for(Client client: clients){
+            int pid = client.getClientData().getPid();
+            stack.push(client);
+            parents.put(pid, client);
+        }
+        boolean isRunSuOK = isRunSuOK(device);
+        Multimap<Integer, Integer> processes = HashMultimap.create();
+        Set<Integer> parentPids = parents.keySet();
+        queryProcessesWithPSCommand(device, processes, parentPids, isRunSuOK ? "su 0 sh -c \"ps -e\"" : "ps -e");
+        if(processes.isEmpty()){
+            queryProcessesWithPSCommand(device, processes, parentPids, isRunSuOK ? "su 0 sh -c \"ps -A\"" : "ps -A");
+        }
+        if(processes.isEmpty()){
+            queryProcessesWithPSCommand(device, processes, parentPids, isRunSuOK ? "su 0 sh -c \"ps\"" : "ps");
+        }
+
+        List<Client> res = new ArrayList<>();
+        while (!stack.empty()){
+            Client parent = stack.pop();
+            Collection<Integer> children = processes.removeAll(parent.getClientData().getPid());
+            if(children == null)
+                continue;
+            for (int pid: children) {
+                ClientImpl child = new ClientImpl((DeviceImpl) device, null, pid);
+                ClientData parentData = parent.getClientData();
+                ClientData childtData = child.getClientData();
+                childtData.setAbi(parentData.getAbi());
+                childtData.setNames(new ClientData.Names(parentData.getClientDescription() + "[" + pid + "::" + parentData.getPid() + "]", parentData.getUserId(), parentData.getPackageName()));
+                childtData.setNativeDebuggable(parentData.isNativeDebuggable());
+                childtData.setJvmFlags(parentData.getJvmFlags());
+                childtData.setAllocationStatus(ClientData.AllocationTrackingStatus.OFF);
+                childtData.setMethodProfilingStatus(ClientData.MethodProfilingStatus.OFF);
+                childtData.setTotalNativeMemory(parentData.getTotalNativeMemory());
+                childtData.setVmIdentifier(parentData.getVmIdentifier());
+                ClientData.HprofData hprofData = parentData.getHprofData();
+                if (hprofData != null) {
+                    if (hprofData.type == ClientData.HprofData.Type.DATA) {
+                        childtData.setHprofData(hprofData.data);
+                    } else {
+                        childtData.setHprofData(hprofData.filename);
+                    }
+                }
+                LOG.info("child: pid = " + child.getClientData().getPid());
+                res.add(child);
+                stack.push(child);
+            }
+        }
+        return res;
+    }
+
     private void doUpdateTree(boolean showAllProcesses) {
         final AndroidDebugBridge debugBridge = AndroidSdkUtils.getDebugBridge(myProject);
         final DefaultMutableTreeNode root = new DefaultMutableTreeNode();
@@ -481,8 +594,12 @@ public class AndroidProcessChooserDialog extends DialogWrapper {
             if (deviceName.equals(myLastSelectedDevice)) {
                 selectedDeviceNode = deviceNode;
             }
-            List<Client> clients = Lists.newArrayList(device.getClients());
-            Collections.sort(clients, (c1, c2) -> {
+            List<Client> clients = new ArrayList<>(Arrays.asList(device.getClients()));
+            Object item = myDebuggerTypeCombo.getSelectedItem();
+            if(item != null && item.getClass().getName().equals(NativeAndroidDebugger.class.getName())) {
+                clients.addAll(queryChildrenProcess(device, clients));
+            }
+            clients.sort((c1, c2) -> {
                 String n1 = StringUtil.notNullize(c1.getClientData().getClientDescription());
                 String n2 = StringUtil.notNullize(c2.getClientData().getClientDescription());
                 return n1.compareTo(n2);
