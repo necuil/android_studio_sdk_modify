@@ -1,0 +1,5 @@
+rootProject.name = "android_studio_sdk_modify"
+include ':app'
+include ':android-ndk'
+include ':android-studio'
+include ':android'
