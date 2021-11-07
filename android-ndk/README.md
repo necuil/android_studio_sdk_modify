@@ -1,0 +1,1 @@
+### build this module and replace those files in Android Studio\plugins\android-ndk\lib\android-ndk.jar with the generated class files

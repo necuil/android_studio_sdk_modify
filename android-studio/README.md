@@ -1,0 +1,1 @@
+# these files are copied from Android Studio\plugins && Android Studio\lib

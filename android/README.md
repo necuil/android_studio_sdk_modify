@@ -1,0 +1,1 @@
+### build this module and replace those files in Android Studio\plugins\android\lib\android.jar with the generated class files
