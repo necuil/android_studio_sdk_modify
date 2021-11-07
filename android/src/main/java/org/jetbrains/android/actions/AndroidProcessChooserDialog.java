@@ -37,7 +37,6 @@ import com.android.tools.idea.run.AndroidRunConfiguration;
 import com.android.tools.idea.run.editor.AndroidDebugger;
 import com.android.tools.idea.run.editor.AndroidDebuggerInfoProvider;
 import com.android.tools.idea.testartifacts.instrumented.AndroidTestRunConfiguration;
-import com.android.tools.ndk.run.editor.NativeAndroidDebugger;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
@@ -566,7 +565,6 @@ public class AndroidProcessChooserDialog extends DialogWrapper {
                         childtData.setHprofData(hprofData.filename);
                     }
                 }
-                LOG.info("child: pid = " + child.getClientData().getPid());
                 res.add(child);
                 stack.push(child);
             }
@@ -595,8 +593,8 @@ public class AndroidProcessChooserDialog extends DialogWrapper {
                 selectedDeviceNode = deviceNode;
             }
             List<Client> clients = new ArrayList<>(Arrays.asList(device.getClients()));
-            Object item = myDebuggerTypeCombo.getSelectedItem();
-            if(item != null && item.getClass().getName().equals(NativeAndroidDebugger.class.getName())) {
+            AndroidDebugger<?> currentDebugger = (AndroidDebugger<?>) myDebuggerTypeCombo.getSelectedItem();
+            if(currentDebugger != null && currentDebugger.getDisplayName().equals("Native Only")) {
                 clients.addAll(queryChildrenProcess(device, clients));
             }
             clients.sort((c1, c2) -> {
